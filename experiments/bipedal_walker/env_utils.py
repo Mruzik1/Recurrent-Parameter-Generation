@@ -3,6 +3,7 @@ Environment utilities for creating custom BipedalWalker environments.
 """
 import gymnasium as gym
 import gymnasium.envs.box2d.bipedal_walker as bw_module
+from Box2D.b2 import polygonShape
 
 
 # Default BipedalWalker constants (for reference)
@@ -10,6 +11,11 @@ DEFAULT_LEG_LENGTH = 1.13
 DEFAULT_LEG_WIDTH = 0.26
 DEFAULT_GRAVITY = -10.0
 DEFAULT_FRICTION = 2.5
+
+# Store original values to compute dependent constants
+_ORIGINAL_LEG_H = 34 / 30  # Original LEG_H = 34/SCALE from gymnasium
+_ORIGINAL_LEG_W = 8 / 30   # Original LEG_W = 8/SCALE from gymnasium
+_ORIGINAL_LEG_DOWN = -8 / 30  # Original LEG_DOWN = -8/SCALE
 
 
 def make_custom_env(
@@ -33,9 +39,25 @@ def make_custom_env(
         Configured gymnasium environment
     """
     # Modify module-level constants before environment creation
-    bw_module.LEG_H = float(leg_length)
-    bw_module.LEG_W = float(leg_width)
+    # These constants are used when creating the Box2D bodies in reset()
+    leg_h = float(leg_length)
+    leg_w = float(leg_width)
+    
+    bw_module.LEG_H = leg_h
+    bw_module.LEG_W = leg_w
     bw_module.FRICTION = float(friction)
+    
+    # LEG_DOWN controls the vertical offset from hull to hip joint
+    # Scale proportionally with leg length to maintain proper positioning
+    leg_scale = leg_length / _ORIGINAL_LEG_H
+    bw_module.LEG_DOWN = _ORIGINAL_LEG_DOWN * leg_scale
+    
+    # CRITICAL: Update the fixture definitions' shapes!
+    # LEG_FD and LOWER_FD are created at module import time with original dimensions.
+    # We must update their shape attribute to use the new leg dimensions.
+    # The shape is a box defined by half-width and half-height.
+    bw_module.LEG_FD.shape = polygonShape(box=(leg_w / 2, leg_h / 2))
+    bw_module.LOWER_FD.shape = polygonShape(box=(0.8 * leg_w / 2, leg_h / 2))
     
     # Create environment
     env = gym.make("BipedalWalker-v3", render_mode=render_mode)
@@ -43,6 +65,9 @@ def make_custom_env(
     # Modify gravity (world is created in __init__)
     if hasattr(env.unwrapped, "world"):
         env.unwrapped.world.gravity = (0, float(gravity))
+    
+    # Force a reset to create bodies with new parameters
+    env.reset()
     
     return env
 

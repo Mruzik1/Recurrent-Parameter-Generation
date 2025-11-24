@@ -8,3 +8,5 @@
 /rubbish
 **/*cache*
 /workspace/classinput/Qwen25llm/
+test_*
+.slurm

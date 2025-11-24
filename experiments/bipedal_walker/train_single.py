@@ -7,7 +7,9 @@ import logging
 import os
 import random
 import time
+from typing import Callable
 
+import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
@@ -33,18 +35,26 @@ def parse_args():
     parser.add_argument("--gravity", type=float, default=-10.0)
     parser.add_argument("--friction", type=float, default=2.5)
     # Training parameters
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--total_timesteps", type=int, default=100_000)
-    parser.add_argument("--learning_rate", type=float, default=3e-4)
-    parser.add_argument("--num_steps", type=int, default=2048, help="Steps per rollout")
-    parser.add_argument("--num_minibatches", type=int, default=32)
-    parser.add_argument("--update_epochs", type=int, default=10)
+    parser.add_argument("--learning_rate", type=float, default=5e-4)
+    parser.add_argument("--num_envs", type=int, default=16, help="Number of parallel environments")
+    parser.add_argument("--num_steps", type=int, default=128, help="Steps per rollout per env")
+    parser.add_argument("--num_minibatches", type=int, default=8)
+    parser.add_argument("--update_epochs", type=int, default=5)
     # Output
     parser.add_argument("--output_path", type=str, default=None)
-    parser.add_argument("--output_dir", type=str, default=".")
+    parser.add_argument("--output_dir", type=str, default="test_data/bipedal_walker")
     parser.add_argument("--visualize", action="store_true")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
     return parser.parse_args()
+
+
+def make_env_fn(leg_length: float, leg_width: float, gravity: float, friction: float) -> Callable:
+    """Create a function that returns a new environment instance."""
+    def _init():
+        return make_custom_env(leg_length, leg_width, gravity, friction)
+    return _init
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -100,10 +110,14 @@ def train(args):
         torch.cuda.manual_seed(args.seed)
         torch.backends.cudnn.deterministic = True
     
-    # Environment setup
-    env = make_custom_env(args.leg_length, args.leg_width, args.gravity, args.friction)
-    obs_dim = int(np.prod(env.observation_space.shape))
-    act_dim = int(np.prod(env.action_space.shape))
+    # Environment setup - vectorized for parallel execution
+    env_fns = [make_env_fn(args.leg_length, args.leg_width, args.gravity, args.friction) 
+               for _ in range(args.num_envs)]
+    envs = gym.vector.AsyncVectorEnv(env_fns)
+    
+    obs_dim = int(np.prod(envs.single_observation_space.shape))
+    act_dim = int(np.prod(envs.single_action_space.shape))
+    num_envs = args.num_envs
     
     # Agent setup
     agent = Agent(obs_dim, act_dim).to(device)
@@ -111,9 +125,9 @@ def train(args):
     
     # Hyperparameters
     num_steps = args.num_steps
-    batch_size = num_steps
+    batch_size = num_steps * num_envs
     minibatch_size = batch_size // args.num_minibatches
-    num_updates = args.total_timesteps // num_steps
+    num_updates = args.total_timesteps // batch_size
     gamma = 0.99
     gae_lambda = 0.95
     clip_coef = 0.2
@@ -121,22 +135,22 @@ def train(args):
     vf_coef = 0.5
     max_grad_norm = 0.5
     
-    # Pre-allocate storage tensors (faster than lists)
-    obs_storage = torch.zeros((num_steps, obs_dim), device=device)
-    actions_storage = torch.zeros((num_steps, act_dim), device=device)
-    logprobs_storage = torch.zeros(num_steps, device=device)
-    rewards_storage = torch.zeros(num_steps, device=device)
-    dones_storage = torch.zeros(num_steps, device=device)
-    values_storage = torch.zeros(num_steps, device=device)
+    # Pre-allocate storage tensors (faster than lists) - now for multiple envs
+    obs_storage = torch.zeros((num_steps, num_envs, obs_dim), device=device)
+    actions_storage = torch.zeros((num_steps, num_envs, act_dim), device=device)
+    logprobs_storage = torch.zeros((num_steps, num_envs), device=device)
+    rewards_storage = torch.zeros((num_steps, num_envs), device=device)
+    dones_storage = torch.zeros((num_steps, num_envs), device=device)
+    values_storage = torch.zeros((num_steps, num_envs), device=device)
     
     # Initialize
-    next_obs, _ = env.reset(seed=args.seed)
-    next_obs = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
-    next_done = torch.zeros(1, device=device)
+    next_obs, _ = envs.reset(seed=args.seed)
+    next_obs = torch.from_numpy(next_obs).float().to(device)
+    next_done = torch.zeros(num_envs, device=device)
     
     # Progress tracking
     episode_rewards = []
-    current_episode_reward = 0.0
+    episode_reward_buffer = np.zeros(num_envs)
     start_time = time.time()
     
     # Optional tqdm
@@ -156,33 +170,32 @@ def train(args):
             dones_storage[step] = next_done
             
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs.unsqueeze(0))
+                action, logprob, _, value = agent.get_action_and_value(next_obs)
             
-            actions_storage[step] = action.squeeze(0)
+            actions_storage[step] = action
             logprobs_storage[step] = logprob
-            values_storage[step] = value.squeeze()
+            values_storage[step] = value.squeeze(-1)
             
-            # Step environment
-            next_obs_np, reward, terminated, truncated, _ = env.step(action.cpu().numpy().squeeze(0))
-            done = terminated or truncated
+            # Step all environments in parallel
+            next_obs_np, rewards_np, terminateds, truncateds, infos = envs.step(action.cpu().numpy())
             
-            rewards_storage[step] = reward
-            current_episode_reward += reward
+            # Convert to tensors efficiently
+            rewards_storage[step] = torch.from_numpy(rewards_np).to(device)
+            next_obs = torch.from_numpy(next_obs_np).float().to(device)
+            next_done = torch.from_numpy(np.logical_or(terminateds, truncateds)).float().to(device)
             
-            next_obs = torch.as_tensor(next_obs_np, dtype=torch.float32, device=device)
-            next_done = torch.tensor(float(done), device=device)
-            
-            if done:
-                episode_rewards.append(current_episode_reward)
-                current_episode_reward = 0.0
-                next_obs_np, _ = env.reset()
-                next_obs = torch.as_tensor(next_obs_np, dtype=torch.float32, device=device)
+            # Track episode rewards
+            episode_reward_buffer += rewards_np
+            for i, (term, trunc) in enumerate(zip(terminateds, truncateds)):
+                if term or trunc:
+                    episode_rewards.append(episode_reward_buffer[i])
+                    episode_reward_buffer[i] = 0.0
         
         # Compute GAE
         with torch.no_grad():
-            next_value = agent.get_value(next_obs.unsqueeze(0)).squeeze()
-            advantages = torch.zeros(num_steps, device=device)
-            lastgaelam = 0.0
+            next_value = agent.get_value(next_obs).squeeze(-1)
+            advantages = torch.zeros((num_steps, num_envs), device=device)
+            lastgaelam = torch.zeros(num_envs, device=device)
             
             for t in reversed(range(num_steps)):
                 if t == num_steps - 1:
@@ -197,7 +210,13 @@ def train(args):
             
             returns = advantages + values_storage
         
-        # Optimize policy
+        # Optimize policy - flatten batch dimensions
+        b_obs = obs_storage.reshape((-1, obs_dim))
+        b_actions = actions_storage.reshape((-1, act_dim))
+        b_logprobs = logprobs_storage.reshape(-1)
+        b_advantages = advantages.reshape(-1)
+        b_returns = returns.reshape(-1)
+        
         b_inds = np.arange(batch_size)
         
         for _ in range(args.update_epochs):
@@ -208,12 +227,12 @@ def train(args):
                 mb_inds = b_inds[start:end]
                 
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(
-                    obs_storage[mb_inds], actions_storage[mb_inds]
+                    b_obs[mb_inds], b_actions[mb_inds]
                 )
-                logratio = newlogprob - logprobs_storage[mb_inds]
+                logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
                 
-                mb_advantages = advantages[mb_inds]
+                mb_advantages = b_advantages[mb_inds]
                 mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
                 
                 # Policy loss
@@ -222,7 +241,7 @@ def train(args):
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
                 
                 # Value loss
-                v_loss = 0.5 * ((newvalue.squeeze() - returns[mb_inds]) ** 2).mean()
+                v_loss = 0.5 * ((newvalue.squeeze() - b_returns[mb_inds]) ** 2).mean()
                 
                 # Total loss
                 loss = pg_loss - ent_coef * entropy.mean() + vf_coef * v_loss
@@ -241,7 +260,7 @@ def train(args):
                 eps=len(episode_rewards)
             )
     
-    env.close()
+    envs.close()
     
     # Determine output path
     if args.output_path is None:

@@ -183,7 +183,7 @@ class BaseDataset(Dataset, ABC):
         checkpoint_list = self.checkpoint_list
         structures = [{} for _ in range(len(checkpoint_list))]
         for i, checkpoint in enumerate(checkpoint_list):
-            diction = torch.load(checkpoint, map_location="cpu")
+            diction = torch.load(checkpoint, map_location="cpu", weights_only=True)
             for key, value in diction.items():
                 if ("num_batches_tracked" in key) or (value.numel() == 1) or not torch.is_floating_point(value):
                     structures[i][key] = (value.shape, value, None)
@@ -194,7 +194,7 @@ class BaseDataset(Dataset, ABC):
                 else:  # conv & linear
                     structures[i][key] = (value.shape, value.mean(), value.std())
         final_structure = {}
-        structure_diction = torch.load(checkpoint_list[0], map_location="cpu")
+        structure_diction = torch.load(checkpoint_list[0], map_location="cpu", weights_only=True)
         for key, param in structure_diction.items():
             if ("num_batches_tracked" in key) or (param.numel() == 1) or not torch.is_floating_point(param):
                 final_structure[key] = (param.shape, param, None)
@@ -266,7 +266,7 @@ class BaseDataset(Dataset, ABC):
 
     def __getitem__(self, index):
         index = index % self.real_length
-        diction = torch.load(self.checkpoint_list[index], map_location="cpu")
+        diction = torch.load(self.checkpoint_list[index], map_location="cpu", weights_only=True)
         param = self.preprocess(diction)
         return param, index
 
@@ -321,7 +321,7 @@ class ConditionalDataset(BaseDataset, ABC):
 
     def __getitem__(self, index):
         index = index % self.real_length
-        diction = torch.load(self.checkpoint_list[index], map_location="cpu")
+        diction = torch.load(self.checkpoint_list[index], map_location="cpu", weights_only=True)
         condition = self._extract_condition(index)
         param = self.preprocess(diction)
         return param, condition

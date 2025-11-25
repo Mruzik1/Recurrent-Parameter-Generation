@@ -10,3 +10,4 @@
 /workspace/classinput/Qwen25llm/
 test_*
 .slurm
+experiments/bipedal_walker/dataset/

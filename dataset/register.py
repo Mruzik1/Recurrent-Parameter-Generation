@@ -163,11 +163,23 @@ class ClassInput_ViTTiny_Test(ClassInput_ViTTiny):
 
 
 # #################################### user-defined dataset classes here ####################################
-#
-# class YourDatasetName(BaseDataset):
-#     data_path = "./dataset/your_dataset_name/checkpoint"
-#     generated_path = "./dataset/your_dataset_name/generated/generated_model.pth"
-#     test_command = f"CUDA_VISIBLE_DEVICES={test_gpu_ids} python ./dataset/your_dataset_name/test.py " + \
-#                    "./dataset/your_dataset_name/generated/generated_model.pth"
-#
+
+class BipedalWalker_PPO(ConditionalDataset):
+    data_path = "./experiments/bipedal_walker/dataset"
+    generated_path = "./experiments/bipedal_walker/generated/generated_walker.pth"
+    test_command = f"CUDA_VISIBLE_DEVICES={test_gpu_ids} python ./experiments/bipedal_walker/test.py " + \
+                   "./experiments/bipedal_walker/generated/generated_walker.pth"
+
+    def _extract_condition(self, index: int):
+        """Extract [leg_length, leg_width, gravity, friction] from filename."""
+        from experiments.bipedal_walker.env_utils import parse_params_from_filename
+        filename = os.path.basename(self.checkpoint_list[index])
+        params = parse_params_from_filename(filename)
+        return torch.tensor([
+            params["leg_length"],
+            params["leg_width"],
+            params["gravity"],
+            params["friction"]
+        ], dtype=torch.float32)
+
 # #################################### user-defined dataset classes here ####################################

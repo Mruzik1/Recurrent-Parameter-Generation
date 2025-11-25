@@ -11,3 +11,5 @@
 test_*
 .slurm
 experiments/bipedal_walker/dataset/
+CLAUDE.md
+run_test_mode.sh

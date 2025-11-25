@@ -1,4 +1,6 @@
 import sys, os, json
+import subprocess
+import re
 root = os.sep + os.sep.join(__file__.split(os.sep)[1:__file__.split(os.sep).index("Recurrent-Parameter-Generation")+1])
 sys.path.append(root)
 os.chdir(root)
@@ -197,9 +199,65 @@ def generate(save_path=config["generated_path"], need_test=True):
         wandb.log({"generated_norm": generated_norm.item()})
     train_set.save_params(prediction, save_path=save_path)
     if need_test:
-        start_new_thread(os.system, (config["test_command"],))
+        evaluate_generated_policy(save_path)
     model.train()
     return prediction
+
+
+def evaluate_generated_policy(checkpoint_path, num_episodes=5):
+    """Synchronously evaluate the generated policy and log results."""
+    print(f"\n{'='*60}")
+    print("📊 EVALUATING GENERATED POLICY")
+    print(f"{'='*60}")
+
+    try:
+        # Run test.py and capture output
+        result = subprocess.run(
+            [sys.executable, "./experiments/bipedal_walker/test.py",
+             checkpoint_path, "--num_episodes", str(num_episodes)],
+            capture_output=True,
+            text=True,
+            timeout=120  # 2 minute timeout
+        )
+
+        output = result.stdout
+        print(output)
+
+        # Parse mean reward from output
+        mean_match = re.search(r'Mean:\s+([-\d.]+)', output)
+        std_match = re.search(r'Std:\s+([-\d.]+)', output)
+
+        if mean_match:
+            mean_reward = float(mean_match.group(1))
+            std_reward = float(std_match.group(1)) if std_match else 0.0
+
+            print(f"\n✅ Evaluation complete: {mean_reward:.2f} ± {std_reward:.2f}")
+
+            # Log to wandb
+            if USE_WANDB:
+                wandb.log({
+                    "eval/mean_reward": mean_reward,
+                    "eval/std_reward": std_reward,
+                })
+
+            # Save to file
+            eval_log_path = "./checkpoint/eval_log.txt"
+            with open(eval_log_path, "a") as f:
+                f.write(f"{checkpoint_path}: {mean_reward:.2f} ± {std_reward:.2f}\n")
+
+            return mean_reward
+        else:
+            print("⚠️  Could not parse evaluation results")
+            return None
+
+    except subprocess.TimeoutExpired:
+        print("⚠️  Evaluation timed out")
+        return None
+    except Exception as e:
+        print(f"⚠️  Evaluation failed: {e}")
+        return None
+    finally:
+        print(f"{'='*60}\n")
 
 
 if __name__ == '__main__':

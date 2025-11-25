@@ -212,7 +212,12 @@ def generate(save_path=config["generated_path"], need_test=True):
     print("\n==> Generating..")
     model.eval()
     with torch.no_grad():
-        prediction = model(sample=True)
+        # Sample a random condition from the training set
+        random_idx = torch.randint(0, len(train_set), (1,)).item()
+        _, condition = train_set[random_idx]
+        condition = condition.unsqueeze(0)  # Add batch dimension [1, d_condition]
+
+        prediction = model(sample=True, condition=condition)
         generated_norm = prediction.abs().mean()
     print("Generated norm:", generated_norm.item())
     if USE_WANDB:

@@ -24,6 +24,7 @@ random.seed(seed)
 # Other imports
 import warnings
 from _thread import start_new_thread
+from tqdm import tqdm
 warnings.filterwarnings("ignore", category=UserWarning)
 if USE_WANDB: import wandb
 
@@ -156,7 +157,12 @@ def train():
         this_steps = 0
     print("==> Start training..")
     model.train()
-    for batch_idx, (param, condition) in enumerate(train_loader):
+
+    # Create progress bar
+    pbar = tqdm(enumerate(train_loader), total=config["total_steps"],
+                desc="Training", unit="step", dynamic_ncols=True)
+
+    for batch_idx, (param, condition) in pbar:
         optimizer.zero_grad()
 
         with accelerator.autocast(autocast_handler=AutocastKwargs(enabled=config["autocast"](batch_idx))):
@@ -166,6 +172,14 @@ def train():
         optimizer.step()
         scheduler.step(batch_idx)
 
+        # Update progress bar with metrics
+        current_lr = scheduler.get_last_lr()[0]
+        pbar.set_postfix({
+            'loss': f'{loss.item():.6f}',
+            'lr': f'{current_lr:.2e}',
+            'autocast': config["autocast"](batch_idx)
+        })
+
         # Logging
         if USE_WANDB and accelerator.is_main_process:
             wandb.log({"train_loss": loss.item()})
@@ -173,12 +187,16 @@ def train():
             train_loss += loss.item()
             this_steps += 1
             if this_steps % config["print_every"] == 0:
-                print('Loss: %.6f' % (train_loss/this_steps))
+                avg_loss = train_loss/this_steps
+                pbar.write(f'Step {batch_idx}: Avg Loss: {avg_loss:.6f}')
                 this_steps = 0
                 train_loss = 0
 
         # Save checkpoint
         if batch_idx % config["save_every"] == 0 and accelerator.is_main_process:
+            pbar.write(f'\n{"="*60}')
+            pbar.write(f'💾 Saving checkpoint at step {batch_idx}')
+            pbar.write(f'{"="*60}')
             os.makedirs(config["checkpoint_save_path"], exist_ok=True)
             state = accelerator.unwrap_model(model).state_dict()
             torch.save(state, os.path.join(config["checkpoint_save_path"], config["tag"]+".pth"))
@@ -186,6 +204,8 @@ def train():
 
         if batch_idx >= config["total_steps"]:
             break
+
+    pbar.close()
 
 
 def generate(save_path=config["generated_path"], need_test=True):

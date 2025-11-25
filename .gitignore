@@ -9,7 +9,7 @@
 **/*cache*
 /workspace/classinput/Qwen25llm/
 test_*
-.slurm
+*.slurm
 experiments/bipedal_walker/dataset/
 CLAUDE.md
 run_test_mode.sh

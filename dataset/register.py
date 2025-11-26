@@ -165,10 +165,10 @@ class ClassInput_ViTTiny_Test(ClassInput_ViTTiny):
 # #################################### user-defined dataset classes here ####################################
 
 class BipedalWalker_PPO(ConditionalDataset):
-    data_path = "./test_data/bipedal_walker"
-    generated_path = "./experiments/bipedal_walker/generated_walker.pth"
+    data_path = "./experiments/bipedal_walker/dataset"
+    generated_path = "./experiments/bipedal_walker/test_generated/generated_walker.pth"
     test_command = f"CUDA_VISIBLE_DEVICES={test_gpu_ids} python ./experiments/bipedal_walker/test.py " + \
-                   "./experiments/bipedal_walker/generated_walker.pth"
+                   "./experiments/bipedal_walker/test_generated/generated_walker.pth"
 
     def _extract_condition(self, index: int):
         """Extract [leg_length, leg_width, gravity, friction] from filename."""

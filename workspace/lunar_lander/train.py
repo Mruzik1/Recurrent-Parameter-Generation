@@ -40,7 +40,7 @@ from model import MambaDiffusion as Model
 from model.diffusion import DDPMSampler
 
 # Dataset
-from dataset import BipedalWalker_PPO as Dataset
+from dataset import LunarLander_PPO as Dataset
 from torch.utils.data import DataLoader
 
 
@@ -68,7 +68,7 @@ config = {
     "model_config": {
         "num_permutation": 'auto',
         # Mamba config
-        "d_condition": 4,  # [leg_length, leg_width, gravity, friction]
+        "d_condition": 4,  # [w_landing, w_fuel, w_time, w_smoothness]
         "d_model": 2048,
         "d_state": 64,
         "d_conv": 4,
@@ -85,7 +85,7 @@ config = {
         "T": 500,
         "forward_once": True,
     },
-    "tag": "bipedal_walker_morphology_adapter",
+    "tag": "lunar_lander_reward_adapter",
 }
 
 
@@ -195,7 +195,7 @@ def train():
         # Save checkpoint
         if batch_idx % config["save_every"] == 0 and accelerator.is_main_process:
             pbar.write(f'\n{"="*60}')
-            pbar.write(f'💾 Saving checkpoint at step {batch_idx}')
+            pbar.write(f'Saving checkpoint at step {batch_idx}')
             pbar.write(f'{"="*60}')
             os.makedirs(config["checkpoint_save_path"], exist_ok=True)
             state = accelerator.unwrap_model(model).state_dict()
@@ -232,13 +232,13 @@ def generate(save_path=config["generated_path"], need_test=True):
 def evaluate_generated_policy(checkpoint_path, num_episodes=5):
     """Synchronously evaluate the generated policy and log results."""
     print(f"\n{'='*60}")
-    print("📊 EVALUATING GENERATED POLICY")
+    print("Evaluating generated policy")
     print(f"{'='*60}")
 
     try:
         # Run test.py and capture output
         result = subprocess.run(
-            [sys.executable, "./experiments/bipedal_walker/test.py",
+            [sys.executable, "./experiments/lunar_lander/test.py",
              checkpoint_path, "--num_episodes", str(num_episodes)],
             capture_output=True,
             text=True,
@@ -256,7 +256,7 @@ def evaluate_generated_policy(checkpoint_path, num_episodes=5):
             mean_reward = float(mean_match.group(1))
             std_reward = float(std_match.group(1)) if std_match else 0.0
 
-            print(f"\n✅ Evaluation complete: {mean_reward:.2f} ± {std_reward:.2f}")
+            print(f"\nEvaluation complete: {mean_reward:.2f} +/- {std_reward:.2f}")
 
             # Log to wandb
             if USE_WANDB:
@@ -268,18 +268,18 @@ def evaluate_generated_policy(checkpoint_path, num_episodes=5):
             # Save to file
             eval_log_path = "./checkpoint/eval_log.txt"
             with open(eval_log_path, "a") as f:
-                f.write(f"{checkpoint_path}: {mean_reward:.2f} ± {std_reward:.2f}\n")
+                f.write(f"{checkpoint_path}: {mean_reward:.2f} +/- {std_reward:.2f}\n")
 
             return mean_reward
         else:
-            print("⚠️  Could not parse evaluation results")
+            print("Could not parse evaluation results")
             return None
 
     except subprocess.TimeoutExpired:
-        print("⚠️  Evaluation timed out")
+        print("Evaluation timed out")
         return None
     except Exception as e:
-        print(f"⚠️  Evaluation failed: {e}")
+        print(f"Evaluation failed: {e}")
         return None
     finally:
         print(f"{'='*60}\n")

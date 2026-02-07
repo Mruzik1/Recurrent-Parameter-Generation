@@ -93,7 +93,7 @@ def test_policy(checkpoint_path: str, num_episodes: int = 10, render: bool = Fal
 
     # Create environment
     render_mode = "human" if render else None
-    env = gym.make("LunarLanderContinuous-v2", render_mode=render_mode)
+    env = gym.make("LunarLanderContinuous-v3", render_mode=render_mode)
 
     # Run evaluation
     rewards = []

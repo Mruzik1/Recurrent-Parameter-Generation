@@ -182,4 +182,73 @@ class BipedalWalker_PPO(ConditionalDataset):
             params["friction"]
         ], dtype=torch.float32)
 
+
+class LunarLander_PPO(ConditionalDataset):
+    data_path = "./test_data/lunar_lander"
+    generated_path = "./experiments/lunar_lander/test_generated/generated_lander.pth"
+    test_command = f"CUDA_VISIBLE_DEVICES={test_gpu_ids} python ./experiments/lunar_lander/test.py " + \
+                   "./experiments/lunar_lander/test_generated/generated_lander.pth"
+
+    def _extract_condition(self, index: int):
+        """Extract [w_landing, w_fuel, w_time, w_smoothness] from filename."""
+        from experiments.lunar_lander.test import parse_weights_from_filename
+        filename = os.path.basename(self.checkpoint_list[index])
+        params = parse_weights_from_filename(filename)
+        return torch.tensor([
+            params["w_landing"],
+            params["w_fuel"],
+            params["w_time"],
+            params["w_smoothness"]
+        ], dtype=torch.float32)
+
+    def __getitem__(self, index):
+        """Override to detach loaded tensors (lunar lander checkpoints save raw nn.Parameters)."""
+        index = index % self.real_length
+        diction = torch.load(self.checkpoint_list[index], map_location="cpu", weights_only=True)
+        diction = {k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in diction.items()}
+        condition = self._extract_condition(index)
+        param = self.preprocess(diction)
+        return param.detach(), condition
+
+    def get_structure(self):
+        """Override to detach nn.Parameter tensors before computing structure stats."""
+        checkpoint_list = self.checkpoint_list
+        structures = [{} for _ in range(len(checkpoint_list))]
+        for i, checkpoint in enumerate(checkpoint_list):
+            diction = torch.load(checkpoint, map_location="cpu", weights_only=True)
+            diction = {k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in diction.items()}
+            for key, value in diction.items():
+                if ("num_batches_tracked" in key) or (value.numel() == 1) or not torch.is_floating_point(value):
+                    structures[i][key] = (value.shape, value, None)
+                elif "running_var" in key:
+                    pre_mean = value.mean() * 0.95
+                    value = torch.log(value / pre_mean + 0.05)
+                    structures[i][key] = (value.shape, pre_mean, value.mean(), value.std())
+                else:  # conv & linear
+                    structures[i][key] = (value.shape, value.mean(), value.std())
+        final_structure = {}
+        structure_diction = torch.load(checkpoint_list[0], map_location="cpu", weights_only=True)
+        structure_diction = {k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in structure_diction.items()}
+        for key, param in structure_diction.items():
+            if ("num_batches_tracked" in key) or (param.numel() == 1) or not torch.is_floating_point(param):
+                final_structure[key] = (param.shape, param, None)
+            elif "running_var" in key:
+                value = [param.shape, 0., 0., 0.]
+                for structure in structures:
+                    for i in [1, 2, 3]:
+                        value[i] += structure[key][i]
+                for i in [1, 2, 3]:
+                    value[i] /= len(structures)
+                final_structure[key] = tuple(value)
+            else:  # conv & linear
+                value = [param.shape, 0., 0.]
+                for structure in structures:
+                    for i in [1, 2]:
+                        value[i] += structure[key][i]
+                for i in [1, 2]:
+                    value[i] /= len(structures)
+                final_structure[key] = tuple(value)
+        self.structure = final_structure
+        return self.structure
+
 # #################################### user-defined dataset classes here ####################################

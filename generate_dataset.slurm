@@ -10,8 +10,8 @@
 #SBATCH --time=48:00:00              # Time limit
 #SBATCH --partition=dgx              # Submit to GPU partition
 
-source ./venv/bin/activate
+cd ~/Recurrent-Parameter-Generation
+source .venv/bin/activate
 mkdir -p test_logs
 
-python experiments/bipedal_walker/generate_dataset.py --num_samples 5000 --output_dir test_data/bipedal_walker --num_workers 4 --total_timesteps 300000
-# python experiments/bipedal_walker/train_single.py --total_timesteps 300000 --output_dir test_data/bipedal_walker --seed 42
+python experiments/lunar_lander/generate_dataset.py --num_samples 2000 --output_dir test_data/lunar_lander --num_workers 4 --total_timesteps 500000

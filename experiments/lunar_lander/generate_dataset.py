@@ -147,7 +147,7 @@ def train_worker(task: tuple) -> tuple:
 
 def main():
     parser = argparse.ArgumentParser(description="Generate LunarLander dataset")
-    parser.add_argument("--num_samples", type=int, default=1000,
+    parser.add_argument("--num_samples", type=int, default=2000,
                        help="Number of models to train")
     parser.add_argument("--output_dir", type=str,
                        default="experiments/lunar_lander/checkpoint",

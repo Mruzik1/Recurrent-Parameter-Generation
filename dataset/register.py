@@ -208,7 +208,7 @@ class LunarLander_PPO(ConditionalDataset):
         diction = {k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in diction.items()}
         condition = self._extract_condition(index)
         param = self.preprocess(diction)
-        return param.detach(), condition
+        return param.detach(), condition, index
 
     def get_structure(self):
         """Override to detach nn.Parameter tensors before computing structure stats."""

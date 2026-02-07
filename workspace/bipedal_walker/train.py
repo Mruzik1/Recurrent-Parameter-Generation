@@ -162,11 +162,11 @@ def train():
     pbar = tqdm(enumerate(train_loader), total=config["total_steps"],
                 desc="Training", unit="step", dynamic_ncols=True)
 
-    for batch_idx, (param, condition) in pbar:
+    for batch_idx, (param, condition, permutation_state) in pbar:
         optimizer.zero_grad()
 
         with accelerator.autocast(autocast_handler=AutocastKwargs(enabled=config["autocast"](batch_idx))):
-            loss = model(output_shape=param.shape, x_0=param, condition=condition)
+            loss = model(output_shape=param.shape, x_0=param, condition=condition, permutation_state=permutation_state)
 
         accelerator.backward(loss)
         optimizer.step()

@@ -324,4 +324,4 @@ class ConditionalDataset(BaseDataset, ABC):
         diction = torch.load(self.checkpoint_list[index], map_location="cpu", weights_only=True)
         condition = self._extract_condition(index)
         param = self.preprocess(diction)
-        return param, condition
+        return param, condition, index

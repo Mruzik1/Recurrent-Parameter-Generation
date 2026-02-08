@@ -99,8 +99,9 @@ config = {
     "eval_episodes": 3,              # episodes per evaluation
     "reward_buffer_size": 50,        # max entries in replay buffer
     "reward_temperature": 1.0,       # sigmoid steepness for reward weighting
-    "reward_loss_start": 2000,       # start using reward loss after this many steps
-    "reward_weight_threshold": 0.5,  # only use samples with weight above this
+    "reward_loss_start": 20000,      # start using reward loss after model has learned basic structure
+    "reward_weight_threshold": 0.5,  # only use samples with relative weight above this
+    "reward_min_reward": -50.0,      # absolute floor: ignore policies worse than this
 }
 
 
@@ -200,15 +201,19 @@ def train():
                 buf_params, buf_cond, buf_reward = reward_buffer.sample(
                     device=base_loss.device
                 )
-                reward_weight_used = reward_buffer.compute_weight(buf_reward)
-                if reward_weight_used >= config["reward_weight_threshold"]:
-                    # Treat high-reward generated params as pseudo ground-truth
-                    aux_loss = reward_weight_used * model(
-                        output_shape=buf_params.shape,
-                        x_0=buf_params,
-                        condition=buf_cond.unsqueeze(0),
-                        permutation_state=None,  # generated with perm_state=False
-                    )
+                # Gate 1: absolute quality floor — skip garbage policies
+                if buf_reward >= config["reward_min_reward"]:
+                    reward_weight_used = reward_buffer.compute_weight(buf_reward)
+                    # Gate 2: relative quality — only reinforce above-average
+                    if reward_weight_used >= config["reward_weight_threshold"]:
+                        raw_aux = reward_weight_used * model(
+                            output_shape=buf_params.shape,
+                            x_0=buf_params,
+                            condition=buf_cond.unsqueeze(0),
+                            permutation_state=None,  # generated with perm_state=False
+                        )
+                        # Clamp: aux_loss never exceeds base_loss magnitude
+                        aux_loss = torch.min(raw_aux, base_loss.detach())
 
             loss = base_loss + config["reward_loss_weight"] * aux_loss
 

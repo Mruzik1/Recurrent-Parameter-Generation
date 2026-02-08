@@ -59,7 +59,7 @@ config = {
     # Train setting
     "batch_size": 16,
     "num_workers": 8,
-    "total_steps": 500_000,
+    "total_steps": 1_000_000,
     "learning_rate": 5e-4,
     "weight_decay": 0.0,
     "save_every": 5000,

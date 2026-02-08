@@ -53,7 +53,7 @@ config = {
     # Train setting
     "batch_size": 16,
     "num_workers": 8,
-    "total_steps": 500_000,
+    "total_steps": 1_000_000,
     "learning_rate": 5e-4,
     "weight_decay": 0.0,
     "save_every": 5000,
@@ -214,7 +214,7 @@ def generate(save_path=config["generated_path"], need_test=True):
     with torch.no_grad():
         # Sample a random condition from the training set
         random_idx = torch.randint(0, len(train_set), (1,)).item()
-        _, condition = train_set[random_idx]
+        _, condition, _ = train_set[random_idx]
         condition = condition.unsqueeze(0)  # Add batch dimension [1, d_condition]
 
         prediction = model(sample=True, condition=condition)

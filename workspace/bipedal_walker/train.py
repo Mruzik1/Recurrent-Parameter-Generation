@@ -43,12 +43,6 @@ from model.diffusion import DDPMSampler
 from dataset import BipedalWalker_PPO as Dataset
 from torch.utils.data import DataLoader
 
-# Reward-weighted self-training
-sys.path.insert(0, os.path.join(root, 'workspace', 'bipedal_walker'))
-from reward_utils import (
-    RewardBuffer, evaluate_generated_tensor, condition_to_env_params
-)
-
 
 config = {
     "seed": SEED,
@@ -59,7 +53,7 @@ config = {
     # Train setting
     "batch_size": 16,
     "num_workers": 8,
-    "total_steps": 1_000_000,
+    "total_steps": 500_000,
     "learning_rate": 5e-4,
     "weight_decay": 0.0,
     "save_every": 5000,
@@ -92,16 +86,6 @@ config = {
         "forward_once": True,
     },
     "tag": "bipedal_walker_morphology_adapter",
-    # Reward-weighted self-training
-    "reward_loss_enabled": True,
-    "reward_loss_weight": 0.1,       # lambda: auxiliary loss coefficient
-    "eval_every": 1000,              # steps between generate-evaluate cycles
-    "eval_episodes": 3,              # episodes per evaluation
-    "reward_buffer_size": 50,        # max entries in replay buffer
-    "reward_temperature": 1.0,       # sigmoid steepness for reward weighting
-    "reward_loss_start": 20000,      # start using reward loss after model has learned basic structure
-    "reward_weight_threshold": 0.5,  # only use samples with relative weight above this
-    "reward_min_reward": -50.0,      # absolute floor: ignore policies worse than this
 }
 
 
@@ -153,13 +137,6 @@ scheduler = CosineAnnealingLR(
     T_max=config["total_steps"],
 )
 
-# Reward buffer
-print('==> Initializing reward buffer..')
-reward_buffer = RewardBuffer(
-    capacity=config["reward_buffer_size"],
-    temperature=config["reward_temperature"],
-)
-
 # Accelerator
 if __name__ == "__main__":
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
@@ -189,33 +166,7 @@ def train():
         optimizer.zero_grad()
 
         with accelerator.autocast(autocast_handler=AutocastKwargs(enabled=config["autocast"](batch_idx))):
-            # Standard diffusion loss on real training data
-            base_loss = model(output_shape=param.shape, x_0=param, condition=condition, permutation_state=permutation_state)
-
-            # Reward-weighted auxiliary loss from replay buffer
-            aux_loss = torch.tensor(0.0, device=base_loss.device)
-            reward_weight_used = 0.0
-            if (config["reward_loss_enabled"]
-                    and len(reward_buffer) > 0
-                    and batch_idx >= config["reward_loss_start"]):
-                buf_params, buf_cond, buf_reward = reward_buffer.sample(
-                    device=base_loss.device
-                )
-                # Gate 1: absolute quality floor — skip garbage policies
-                if buf_reward >= config["reward_min_reward"]:
-                    reward_weight_used = reward_buffer.compute_weight(buf_reward)
-                    # Gate 2: relative quality — only reinforce above-average
-                    if reward_weight_used >= config["reward_weight_threshold"]:
-                        raw_aux = reward_weight_used * model(
-                            output_shape=buf_params.shape,
-                            x_0=buf_params,
-                            condition=buf_cond.unsqueeze(0),
-                            permutation_state=None,  # generated with perm_state=False
-                        )
-                        # Clamp: aux_loss never exceeds base_loss magnitude
-                        aux_loss = torch.min(raw_aux, base_loss.detach())
-
-            loss = base_loss + config["reward_loss_weight"] * aux_loss
+            loss = model(output_shape=param.shape, x_0=param, condition=condition, permutation_state=permutation_state)
 
         accelerator.backward(loss)
         optimizer.step()
@@ -223,28 +174,15 @@ def train():
 
         # Update progress bar with metrics
         current_lr = scheduler.get_last_lr()[0]
-        postfix = {
+        pbar.set_postfix({
             'loss': f'{loss.item():.6f}',
-            'base': f'{base_loss.item():.6f}',
             'lr': f'{current_lr:.2e}',
-        }
-        if config["reward_loss_enabled"] and len(reward_buffer) > 0:
-            postfix['aux'] = f'{aux_loss.item():.4f}' if isinstance(aux_loss, torch.Tensor) else '0'
-            postfix['buf'] = len(reward_buffer)
-        pbar.set_postfix(postfix)
+            'autocast': config["autocast"](batch_idx),
+        })
 
         # Logging
         if USE_WANDB and accelerator.is_main_process:
-            log_dict = {"train_loss": loss.item(), "base_loss": base_loss.item()}
-            if isinstance(aux_loss, torch.Tensor) and aux_loss.item() > 0:
-                log_dict["aux_loss"] = aux_loss.item()
-                log_dict["reward_weight"] = reward_weight_used
-            if len(reward_buffer) > 0:
-                buf_stats = reward_buffer.stats()
-                log_dict["buffer/size"] = buf_stats["size"]
-                log_dict["buffer/baseline"] = buf_stats["baseline"]
-                log_dict["buffer/best"] = buf_stats["max"]
-            wandb.log(log_dict)
+            wandb.log({"train_loss": loss.item()})
         elif not USE_WANDB:
             train_loss += loss.item()
             this_steps += 1
@@ -254,18 +192,8 @@ def train():
                 this_steps = 0
                 train_loss = 0
 
-        # Periodic reward evaluation: generate → evaluate → store in buffer
-        if (config["reward_loss_enabled"]
-                and batch_idx % config["eval_every"] == 0
-                and batch_idx > 0
-                and accelerator.is_main_process):
-            _reward_eval_step(batch_idx, pbar)
-
         # Save checkpoint
         if batch_idx % config["save_every"] == 0 and accelerator.is_main_process:
-            pbar.write(f'\n{"="*60}')
-            pbar.write(f'💾 Saving checkpoint at step {batch_idx}')
-            pbar.write(f'{"="*60}')
             os.makedirs(config["checkpoint_save_path"], exist_ok=True)
             state = accelerator.unwrap_model(model).state_dict()
             torch.save(state, os.path.join(config["checkpoint_save_path"], config["tag"]+".pth"))
@@ -275,47 +203,6 @@ def train():
             break
 
     pbar.close()
-
-
-def _reward_eval_step(step, pbar=None):
-    """Generate a policy, evaluate in environment, store in reward buffer."""
-    model.eval()
-    with torch.no_grad():
-        # Sample random condition from training set
-        idx = torch.randint(0, len(train_set), (1,)).item()
-        _, cond, _ = train_set[idx]
-        cond_batch = cond.unsqueeze(0).to(next(model.parameters()).device)
-
-        # Generate policy
-        prediction = model(sample=True, condition=cond_batch, permutation_state=False)
-
-    # Evaluate in environment (in-process, no subprocess)
-    _, reward = evaluate_generated_tensor(
-        prediction, train_set, cond,
-        num_episodes=config["eval_episodes"],
-    )
-
-    # Store in buffer
-    reward_buffer.add(prediction, cond, reward)
-    buf_stats = reward_buffer.stats()
-
-    msg = (f"  [Reward Eval @ step {step}] "
-           f"reward={reward:.1f}  buf_size={buf_stats['size']}  "
-           f"baseline={buf_stats['baseline']:.1f}  best={buf_stats['max']:.1f}")
-    if pbar is not None:
-        pbar.write(msg)
-    else:
-        print(msg)
-
-    if USE_WANDB:
-        wandb.log({
-            "reward_eval/reward": reward,
-            "reward_eval/buffer_baseline": buf_stats["baseline"],
-            "reward_eval/buffer_best": buf_stats["max"],
-        })
-
-    model.train()
-    return reward
 
 
 def generate(save_path=config["generated_path"], need_test=True):

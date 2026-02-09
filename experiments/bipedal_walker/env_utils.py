@@ -18,6 +18,25 @@ _ORIGINAL_LEG_W = 8 / 30   # Original LEG_W = 8/SCALE from gymnasium
 _ORIGINAL_LEG_DOWN = -8 / 30  # Original LEG_DOWN = -8/SCALE
 
 
+def validate_params(leg_length: float, leg_width: float, gravity: float, friction: float):
+    """
+    Validate that environment parameters are within safe ranges.
+
+    Raises ValueError with a descriptive message if any parameter is out of bounds.
+    """
+    checks = {
+        "leg_length": (leg_length, 0.1, 5.0),
+        "leg_width": (leg_width, 0.01, 2.0),
+        "gravity": (gravity, -50.0, -0.1),
+        "friction": (friction, 0.01, 20.0),
+    }
+    for name, (val, lo, hi) in checks.items():
+        if not (lo <= val <= hi):
+            raise ValueError(
+                f"{name}={val} is outside safe range [{lo}, {hi}]"
+            )
+
+
 def make_custom_env(
     leg_length: float = DEFAULT_LEG_LENGTH,
     leg_width: float = DEFAULT_LEG_WIDTH,
@@ -38,6 +57,9 @@ def make_custom_env(
     Returns:
         Configured gymnasium environment
     """
+    # Validate parameters
+    validate_params(leg_length, leg_width, gravity, friction)
+
     # Modify module-level constants before environment creation
     # These constants are used when creating the Box2D bodies in reset()
     leg_h = float(leg_length)
@@ -75,36 +97,67 @@ def make_custom_env(
 def parse_params_from_filename(filename: str) -> dict:
     """
     Parse environment parameters from a checkpoint filename.
-    
-    Expected format: walker_L{leg_length}_W{leg_width}_g{gravity}_mu{friction}.pth
-    
+
+    Supports both formats:
+      - walker_L{ll}_W{lw}_g{g}_mu{f}.pth          (legacy, no seed)
+      - walker_L{ll}_W{lw}_g{g}_mu{f}_s{seed}.pth  (new, with seed suffix)
+
     Args:
         filename: The checkpoint filename (not full path)
-    
+
     Returns:
         Dictionary with keys: leg_length, leg_width, gravity, friction
-        
+        (and optionally 'seed' if present in the filename)
+
     Raises:
         ValueError: If filename doesn't match expected format
     """
     if not filename.startswith("walker_") or not filename.endswith(".pth"):
         raise ValueError(f"Filename '{filename}' doesn't match expected pattern")
-    
-    # Remove prefix and suffix: walker_L1.23_W0.34_g-12.34_mu2.34.pth -> L1.23_W0.34_g-12.34_mu2.34
+
+    # Remove prefix and suffix
     params_str = filename[7:-4]
     parts = params_str.split("_")
-    
+
+    # Strip optional seed suffix (e.g. "s42")
+    seed = None
+    if len(parts) == 5 and parts[-1].startswith("s"):
+        try:
+            seed = int(parts[-1][1:])
+        except ValueError:
+            raise ValueError(
+                f"Cannot parse seed from '{parts[-1]}' in '{filename}'"
+            )
+        parts = parts[:4]
+
     if len(parts) != 4:
         raise ValueError(f"Expected 4 parameter parts, got {len(parts)}")
-    
-    return {
+
+    result = {
         "leg_length": float(parts[0][1:]),   # L{value}
         "leg_width": float(parts[1][1:]),    # W{value}
         "gravity": float(parts[2][1:]),      # g{value}
         "friction": float(parts[3][2:]),     # mu{value}
     }
+    if seed is not None:
+        result["seed"] = seed
+    return result
 
 
-def make_filename(leg_length: float, leg_width: float, gravity: float, friction: float) -> str:
-    """Generate a standardized filename for a checkpoint."""
-    return f"walker_L{leg_length:.2f}_W{leg_width:.2f}_g{gravity:.2f}_mu{friction:.2f}.pth"
+def make_filename(
+    leg_length: float,
+    leg_width: float,
+    gravity: float,
+    friction: float,
+    seed: int = None,
+) -> str:
+    """Generate a standardized filename for a checkpoint.
+
+    Args:
+        leg_length, leg_width, gravity, friction: Environment parameters.
+        seed: Optional training seed. If provided, appended as ``_s{seed}``.
+    """
+    base = f"walker_L{leg_length:.2f}_W{leg_width:.2f}_g{gravity:.2f}_mu{friction:.2f}"
+    if seed is not None:
+        return f"{base}_s{seed}.pth"
+    return f"{base}.pth"

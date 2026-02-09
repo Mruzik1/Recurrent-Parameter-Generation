@@ -36,12 +36,18 @@ def parse_args():
     parser.add_argument("--friction", type=float, default=2.5)
     # Training parameters
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--total_timesteps", type=int, default=100_000)
-    parser.add_argument("--learning_rate", type=float, default=5e-4)
+    parser.add_argument("--total_timesteps", type=int, default=300_000)
+    parser.add_argument("--learning_rate", type=float, default=3e-4)
     parser.add_argument("--num_envs", type=int, default=16, help="Number of parallel environments")
     parser.add_argument("--num_steps", type=int, default=128, help="Steps per rollout per env")
     parser.add_argument("--num_minibatches", type=int, default=8)
     parser.add_argument("--update_epochs", type=int, default=5)
+    parser.add_argument("--ent_coef", type=float, default=0.01, help="Entropy coefficient for exploration")
+    parser.add_argument("--anneal_lr", action="store_true", default=True, help="Linear LR annealing")
+    parser.add_argument("--no_anneal_lr", action="store_true", help="Disable LR annealing")
+    # Evaluation & quality gate
+    parser.add_argument("--eval_episodes", type=int, default=10, help="Evaluation episodes after training")
+    parser.add_argument("--min_reward", type=float, default=float('-inf'), help="Minimum reward to save model")
     # Output
     parser.add_argument("--output_path", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default="test_data/bipedal_walker")
@@ -96,6 +102,51 @@ class Agent(nn.Module):
             action = probs.sample()
         return action, probs.log_prob(action).sum(-1), probs.entropy().sum(-1), self.critic(x)
 
+    def get_action(self, x):
+        """Get deterministic action for evaluation."""
+        return self.actor_mean(x)
+
+
+def evaluate_policy(
+    agent: Agent,
+    leg_length: float,
+    leg_width: float,
+    gravity: float,
+    friction: float,
+    num_episodes: int = 10,
+    device: torch.device = None,
+) -> tuple:
+    """
+    Evaluate a trained policy deterministically.
+
+    Returns:
+        (mean_reward, std_reward, rewards_list)
+    """
+    if device is None:
+        device = next(agent.parameters()).device
+
+    env = make_custom_env(leg_length, leg_width, gravity, friction)
+    agent.eval()
+    rewards = []
+
+    for _ in range(num_episodes):
+        obs, _ = env.reset()
+        done = False
+        total_reward = 0.0
+
+        while not done:
+            obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            with torch.no_grad():
+                action = agent.get_action(obs_tensor)
+            obs, reward, terminated, truncated, _ = env.step(action.cpu().numpy().squeeze(0))
+            total_reward += reward
+            done = terminated or truncated
+
+        rewards.append(total_reward)
+
+    env.close()
+    return float(np.mean(rewards)), float(np.std(rewards)), rewards
+
 
 def train(args):
     """Main training loop."""
@@ -131,9 +182,10 @@ def train(args):
     gamma = 0.99
     gae_lambda = 0.95
     clip_coef = 0.2
-    ent_coef = 0.0
+    ent_coef = args.ent_coef
     vf_coef = 0.5
     max_grad_norm = 0.5
+    anneal_lr = args.anneal_lr and not args.no_anneal_lr
     
     # Pre-allocate storage tensors (faster than lists) - now for multiple envs
     obs_storage = torch.zeros((num_steps, num_envs, obs_dim), device=device)
@@ -164,6 +216,13 @@ def train(args):
         pbar = range(num_updates)
     
     for update in pbar:
+        # Learning rate annealing
+        if anneal_lr:
+            frac = 1.0 - update / num_updates
+            lr_now = frac * args.learning_rate
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = lr_now
+
         # Collect rollout
         for step in range(num_steps):
             obs_storage[step] = next_obs
@@ -261,28 +320,51 @@ def train(args):
             )
     
     envs.close()
-    
+
+    # Post-training evaluation
+    eval_mean, eval_std, eval_rewards = evaluate_policy(
+        agent, args.leg_length, args.leg_width, args.gravity, args.friction,
+        num_episodes=args.eval_episodes, device=device,
+    )
+    logger.info(f"Evaluation: mean={eval_mean:.1f}, std={eval_std:.1f}")
+
+    # Machine-parseable line for orchestrator
+    print(f"EVAL_REWARD={eval_mean:.2f}")
+
+    elapsed = time.time() - start_time
+    training_reward = np.mean(episode_rewards[-10:]) if episode_rewards else 0.0
+    logger.info(
+        f"Training complete in {elapsed:.1f}s | Episodes: {len(episode_rewards)} "
+        f"| Train Avg: {training_reward:.1f} | Eval Avg: {eval_mean:.1f}"
+    )
+
+    # Quality gate: skip saving if below threshold
+    if eval_mean < args.min_reward:
+        logger.warning(
+            f"Eval reward {eval_mean:.1f} < threshold {args.min_reward:.1f}. "
+            f"Model NOT saved."
+        )
+        print(f"QUALITY_GATE=REJECTED")
+        return agent, episode_rewards, eval_mean
+
     # Determine output path
     if args.output_path is None:
         filename = make_filename(args.leg_length, args.leg_width, args.gravity, args.friction)
         output_path = os.path.join(args.output_dir, filename)
     else:
         output_path = args.output_path
-    
+
     # Save model
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     torch.save(agent.state_dict(), output_path)
-    
-    elapsed = time.time() - start_time
-    final_reward = np.mean(episode_rewards[-10:]) if episode_rewards else 0.0
-    logger.info(f"Training complete in {elapsed:.1f}s | Episodes: {len(episode_rewards)} | Avg Reward: {final_reward:.1f}")
     logger.info(f"Model saved to {output_path}")
-    
+    print(f"QUALITY_GATE=ACCEPTED")
+
     # Optional visualization
     if args.visualize:
         visualize_agent(agent, args, device)
-    
-    return agent, episode_rewards
+
+    return agent, episode_rewards, eval_mean
 
 
 def visualize_agent(agent, args, device):

@@ -184,7 +184,7 @@ class BipedalWalker_PPO(ConditionalDataset):
 
 
 class LunarLander_PPO(ConditionalDataset):
-    data_path = "./test_data/lunar_lander"
+    data_path = "./test_data/lunar_lander_data/lunar_lander"
     generated_path = "./experiments/lunar_lander/test_generated/generated_lander.pth"
     test_command = f"CUDA_VISIBLE_DEVICES={test_gpu_ids} python ./experiments/lunar_lander/test.py " + \
                    "./experiments/lunar_lander/test_generated/generated_lander.pth"

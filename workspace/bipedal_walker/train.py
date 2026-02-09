@@ -48,7 +48,7 @@ config = {
     "seed": SEED,
     # Dataset setting
     "dataset": Dataset,
-    "dim_per_token": 2048,  # Small policy network
+    "dim_per_token": 1024,  # Small policy network
     "sequence_length": 'auto',
     # Train setting
     "batch_size": 16,

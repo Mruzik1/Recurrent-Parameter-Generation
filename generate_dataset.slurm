@@ -14,4 +14,4 @@ cd ~/Recurrent-Parameter-Generation
 source .venv/bin/activate
 mkdir -p test_logs
 
-python experiments/lunar_lander/generate_dataset.py --num_samples 2000 --output_dir test_data/lunar_lander --num_workers 4 --total_timesteps 500000
+python experiments/bipedal_walker/generate_dataset.py --num_conditions 3333 --num_seeds 3 --output_dir test_data/bipedal_walker_data/bipedal_walker --num_workers 4 --total_timesteps 500000 --sampling_method mixed --min_reward -50 --eval_episodes 10

@@ -165,7 +165,7 @@ class ClassInput_ViTTiny_Test(ClassInput_ViTTiny):
 # #################################### user-defined dataset classes here ####################################
 
 class BipedalWalker_PPO(ConditionalDataset):
-    data_path = "./test_data/bipedal_walker"
+    data_path = "./test_data/bipedal_walker_data/bipedal_walker"
     generated_path = "./experiments/bipedal_walker/test_generated/generated_walker.pth"
     test_command = f"CUDA_VISIBLE_DEVICES={test_gpu_ids} python ./experiments/bipedal_walker/test.py " + \
                    "./experiments/bipedal_walker/test_generated/generated_walker.pth"
@@ -250,5 +250,40 @@ class LunarLander_PPO(ConditionalDataset):
                 final_structure[key] = tuple(value)
         self.structure = final_structure
         return self.structure
+
+
+class MLP_Regression(ConditionalDataset):
+    data_path = "./experiments/mlp_regression/dataset"
+    generated_path = "./experiments/mlp_regression/test_generated/generated_model.pth"
+    test_command = f"CUDA_VISIBLE_DEVICES={test_gpu_ids} python ./experiments/mlp_regression/test.py " + \
+                   "./experiments/mlp_regression/test_generated/generated_model.pth"
+
+    def _extract_condition(self, index: int):
+        """Extract [a, b, f, phi] from filename like func_a1.50_b0.30_f2.00_p1.57.pth."""
+        import re
+        filename = os.path.basename(self.checkpoint_list[index])
+        pattern = r"func_a([\d.-]+)_b([\d.-]+)_f([\d.-]+)_p([\d.-]+)\.pth"
+        match = re.match(pattern, filename)
+        if not match:
+            raise ValueError(f"Cannot parse condition from filename: {filename}")
+        a = float(match.group(1))
+        b = float(match.group(2))
+        f = float(match.group(3))
+        phi = float(match.group(4))
+        return torch.tensor([a, b, f, phi], dtype=torch.float32)
+
+
+class MLP_Regression_Train(MLP_Regression):
+    data_path = "./experiments/mlp_regression/dataset_train"
+    generated_path = None
+    test_command = None
+
+
+class MLP_Regression_Val(MLP_Regression):
+    data_path = "./experiments/mlp_regression/dataset_val"
+    generated_path = "./experiments/mlp_regression/test_generated/generated_model.pth"
+    test_command = f"CUDA_VISIBLE_DEVICES={test_gpu_ids} python ./experiments/mlp_regression/test.py " + \
+                   "./experiments/mlp_regression/test_generated/generated_model.pth"
+
 
 # #################################### user-defined dataset classes here ####################################

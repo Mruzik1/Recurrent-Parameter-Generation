@@ -40,7 +40,7 @@ from model import MambaDiffusion as Model
 from model.diffusion import DDPMSampler
 
 # Dataset
-from dataset import BipedalWalker_PPO as Dataset
+from dataset import MLP_Regression_Train as Dataset
 from torch.utils.data import DataLoader
 
 
@@ -48,27 +48,27 @@ config = {
     "seed": SEED,
     # Dataset setting
     "dataset": Dataset,
-    "dim_per_token": 2048,  # Small policy network
+    "dim_per_token": 2048,
     "sequence_length": 'auto',
     # Train setting
     "batch_size": 16,
     "num_workers": 8,
-    "total_steps": 5_000_000,
+    "total_steps": 100_000,
     "learning_rate": 5e-4,
     "weight_decay": 0.0,
-    "save_every": 5000,
+    "save_every": 10_000,
     "print_every": 50,
-    "autocast": lambda i: 50_000 < i < 400_000,
+    "autocast": lambda i: 5_000 < i < 80_000,
     "checkpoint_save_path": "./checkpoint",
     # Test setting
     "test_batch_size": 1,
-    "generated_path": Dataset.generated_path,
-    "test_command": Dataset.test_command,
+    "generated_path": "./experiments/mlp_regression/test_generated/generated_model.pth",
+    "test_command": f"python ./experiments/mlp_regression/test.py ./experiments/mlp_regression/test_generated/generated_model.pth",
     # Model config
     "model_config": {
         "num_permutation": 'auto',
         # Mamba config
-        "d_condition": 4,  # [leg_length, leg_width, gravity, friction]
+        "d_condition": 4,           # (a, b, f, phi)
         "d_model": 2048,
         "d_state": 64,
         "d_conv": 4,
@@ -82,10 +82,10 @@ config = {
         "kernel_size": 7,
         "sample_mode": DDPMSampler,
         "beta": (0.0001, 0.02),
-        "T": 1000,
+        "T": 500,
         "forward_once": True,
     },
-    "tag": "bipedal_walker_morphology_adapter",
+    "tag": "mlp_regression_adapter",
 }
 
 
@@ -221,62 +221,52 @@ def generate(save_path=config["generated_path"], need_test=True):
         wandb.log({"generated_norm": generated_norm.item()})
     train_set.save_params(prediction, save_path=save_path)
     if need_test:
-        evaluate_generated_policy(save_path)
+        evaluate_generated_checkpoint(save_path, condition.squeeze(0))
     model.train()
     return prediction
 
 
-def evaluate_generated_policy(checkpoint_path, num_episodes=5):
-    """Synchronously evaluate the generated policy and log results."""
+def evaluate_generated_checkpoint(checkpoint_path, condition):
+    """Evaluate the generated MLP against its target function."""
     print(f"\n{'='*60}")
-    print("📊 EVALUATING GENERATED POLICY")
+    print("EVALUATING GENERATED MLP")
     print(f"{'='*60}")
 
     try:
-        # Run test.py and capture output
+        a, b, f, phi = condition[0].item(), condition[1].item(), condition[2].item(), condition[3].item()
         result = subprocess.run(
-            [sys.executable, "./experiments/bipedal_walker/test.py",
-             checkpoint_path, "--num_episodes", str(num_episodes)],
+            [sys.executable, "./experiments/mlp_regression/test.py",
+             checkpoint_path, "--condition", str(a), str(b), str(f), str(phi)],
             capture_output=True,
             text=True,
-            timeout=120  # 2 minute timeout
+            timeout=60,
         )
 
         output = result.stdout
         print(output)
 
-        # Parse mean reward from output
-        mean_match = re.search(r'Mean:\s+([-\d.]+)', output)
-        std_match = re.search(r'Std:\s+([-\d.]+)', output)
-
-        if mean_match:
-            mean_reward = float(mean_match.group(1))
-            std_reward = float(std_match.group(1)) if std_match else 0.0
-
-            print(f"\n✅ Evaluation complete: {mean_reward:.2f} ± {std_reward:.2f}")
-
-            # Log to wandb
+        # Parse MSE from output
+        mse_match = re.search(r'MSE:\s+([\d.]+)', output)
+        if mse_match:
+            mse = float(mse_match.group(1))
+            print(f"Evaluation MSE: {mse:.6f}")
             if USE_WANDB:
-                wandb.log({
-                    "eval/mean_reward": mean_reward,
-                    "eval/std_reward": std_reward,
-                })
+                wandb.log({"eval/mse": mse})
 
-            # Save to file
-            eval_log_path = "./checkpoint/eval_log.txt"
-            with open(eval_log_path, "a") as f:
-                f.write(f"{checkpoint_path}: {mean_reward:.2f} ± {std_reward:.2f}\n")
-
-            return mean_reward
+            # Save to log
+            eval_log_path = "./checkpoint/eval_log_mlp.txt"
+            with open(eval_log_path, "a") as logf:
+                logf.write(f"{checkpoint_path}: MSE={mse:.6f} (a={a:.2f},b={b:.2f},f={f:.2f},phi={phi:.2f})\n")
+            return mse
         else:
-            print("⚠️  Could not parse evaluation results")
+            print("Could not parse MSE from output")
             return None
 
     except subprocess.TimeoutExpired:
-        print("⚠️  Evaluation timed out")
+        print("Evaluation timed out")
         return None
     except Exception as e:
-        print(f"⚠️  Evaluation failed: {e}")
+        print(f"Evaluation failed: {e}")
         return None
     finally:
         print(f"{'='*60}\n")
